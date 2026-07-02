@@ -69,13 +69,13 @@
   .logo {
     width: 34px;
     height: 34px;
-    border-radius: 10px;
+    border-radius: 8px;
     background: linear-gradient(135deg, var(--text), #7c7c86);
     color: var(--bg);
     display: grid;
     place-items: center;
     font-weight: 800;
-    letter-spacing: .02em;
+    letter-spacing: 0;
   }
 
   h1 {
@@ -121,7 +121,7 @@
 
   .metric-card {
     min-height: 70px;
-    border-radius: 14px;
+    border-radius: 8px;
     padding: 12px;
     overflow: hidden;
   }
@@ -129,7 +129,7 @@
   .label {
     color: var(--muted);
     font-size: 10px;
-    letter-spacing: .12em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 
@@ -158,7 +158,7 @@
   .right-stack { grid-template-rows: minmax(0, 1fr) 190px; }
 
   .panel {
-    border-radius: 16px;
+    border-radius: 8px;
     min-height: 0;
     overflow: hidden;
     display: flex;
@@ -188,7 +188,7 @@
 
   .server-grid {
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(180px, 1fr) minmax(140px, 180px) minmax(140px, 180px);
     gap: 8px;
     align-items: end;
   }
@@ -203,7 +203,7 @@
     color: var(--text);
     background: rgba(255,255,255,.035);
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 8px;
     outline: none;
     padding: 9px 10px;
     min-height: 36px;
@@ -232,7 +232,7 @@
 
   .btn {
     min-height: 34px;
-    border-radius: 10px;
+    border-radius: 8px;
     border: 1px solid var(--line);
     color: var(--text);
     background: rgba(255,255,255,.055);
@@ -274,7 +274,7 @@
     gap: 8px;
     padding: 8px;
     border: 1px solid var(--line-soft);
-    border-radius: 11px;
+    border-radius: 8px;
     background: rgba(255,255,255,.025);
   }
 
@@ -286,7 +286,7 @@
   .account-card, .status-card, .log-item {
     border: 1px solid var(--line-soft);
     background: rgba(255,255,255,.025);
-    border-radius: 13px;
+    border-radius: 8px;
     padding: 10px;
   }
 
@@ -351,7 +351,7 @@
     white-space: pre-wrap;
     word-break: break-word;
     border: 1px solid var(--line-soft);
-    border-radius: 12px;
+    border-radius: 8px;
     padding: 11px;
     background: rgba(0,0,0,.20);
   }
@@ -363,7 +363,7 @@
     max-width: min(420px, calc(100vw - 36px));
     z-index: 20;
     border: 1px solid var(--line);
-    border-radius: 12px;
+    border-radius: 8px;
     background: var(--panel);
     color: var(--text);
     padding: 10px 12px;
@@ -453,6 +453,10 @@
             <div class="field compact">
               <label class="label" for="adminToken">Admin token</label>
               <input class="mono" id="adminToken" type="password" placeholder="Only if configured">
+            </div>
+            <div class="field compact">
+              <label class="label" for="apiToken">API token</label>
+              <input class="mono" id="apiToken" type="password" placeholder="Only if /v1 is protected">
             </div>
           </div>
           <div class="hint">Desktop app mode serves this console and the APIs from the same local port. GitHub Pages mode points this page at your own backend URL.</div>
@@ -639,7 +643,10 @@ function initialServerUrl() {
 
 let SERVER = initialServerUrl();
 const BOOTSTRAP = window.__LLM_POOL_BOOTSTRAP__ || {};
-let ADMIN_TOKEN = localStorage.getItem("llmPoolAdminToken") || BOOTSTRAP.adminToken || "";
+let ADMIN_TOKEN = BOOTSTRAP.generatedAdminToken
+  ? (BOOTSTRAP.adminToken || "")
+  : (localStorage.getItem("llmPoolAdminToken") || BOOTSTRAP.adminToken || "");
+let API_TOKEN = localStorage.getItem("llmPoolApiToken") || "";
 let CHANNELS = [];
 let logs = [];
 
@@ -664,8 +671,14 @@ function escapeHtml(value) {
 function normalizeServer() {
   SERVER = $("serverUrl").value.trim().replace(/\/+$/, "") || "http://localhost:8080";
   ADMIN_TOKEN = $("adminToken").value.trim();
+  API_TOKEN = $("apiToken").value.trim();
   localStorage.setItem("llmPoolServer", SERVER);
-  localStorage.setItem("llmPoolAdminToken", ADMIN_TOKEN);
+  if (BOOTSTRAP.generatedAdminToken) {
+    localStorage.removeItem("llmPoolAdminToken");
+  } else {
+    localStorage.setItem("llmPoolAdminToken", ADMIN_TOKEN);
+  }
+  localStorage.setItem("llmPoolApiToken", API_TOKEN);
   $("apiBase").textContent = SERVER + "/v1";
   $("apiOpenAI").textContent = SERVER + "/v1/chat/completions";
   $("apiAnthropic").textContent = SERVER + "/v1/messages";
@@ -674,6 +687,12 @@ function normalizeServer() {
 function headers(extra = {}) {
   const h = {...extra};
   if (ADMIN_TOKEN) h["X-Admin-Token"] = ADMIN_TOKEN;
+  return h;
+}
+
+function apiHeaders(extra = {}) {
+  const h = {...extra};
+  if (API_TOKEN) h["X-Api-Key"] = API_TOKEN;
   return h;
 }
 
@@ -954,7 +973,7 @@ async function sendPlayground() {
     const path = format === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
     const r = await fetch(SERVER + path, {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: apiHeaders({"Content-Type": "application/json"}),
       body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error(await r.text());
@@ -1035,12 +1054,13 @@ async function init() {
   initTheme();
   $("serverUrl").value = SERVER;
   $("adminToken").value = ADMIN_TOKEN;
+  $("apiToken").value = API_TOKEN;
   normalizeServer();
   updateFormMode();
   bindEvents();
   renderLogs();
   setEmptyMetrics();
-  if (BOOTSTRAP.generatedAdminToken && !localStorage.getItem("llmPoolAdminToken")) {
+  if (BOOTSTRAP.generatedAdminToken) {
     addLog("Loaded the generated local admin token for this desktop session.");
   }
   await testHealth();

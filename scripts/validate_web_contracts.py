@@ -66,8 +66,17 @@ for marker in {
     "diagnosticsButton",
     "downloadDiagnostics",
     "/admin/diagnostics",
+    "llmPoolApiToken",
+    'h["X-Api-Key"] = API_TOKEN',
+    "BOOTSTRAP.generatedAdminToken",
+    "localStorage.removeItem(\"llmPoolAdminToken\")",
 }:
     assert_true(marker in dashboard, f"dashboard marker missing: {marker}")
+
+assert_true(
+    'let ADMIN_TOKEN = BOOTSTRAP.generatedAdminToken' in dashboard,
+    "generated local admin token must take precedence over stale localStorage",
+)
 
 assert_true("https://cdn" not in dashboard.lower(), "dashboard should remain self-contained")
 assert_true("<script src=" not in dashboard.lower(), "dashboard should not load external scripts")

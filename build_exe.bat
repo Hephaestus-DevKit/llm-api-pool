@@ -7,6 +7,7 @@ cd /d "%~dp0"
 
 set "PYTHON_CMD=python"
 set "CONDA_EXE="
+set "CONDA_ENV="
 
 where conda.exe >nul 2>nul
 if not errorlevel 1 set "CONDA_EXE=conda.exe"
@@ -16,9 +17,11 @@ if not defined CONDA_EXE if exist "%USERPROFILE%\anaconda3\Scripts\conda.exe" se
 if defined CONDA_EXE (
   "%CONDA_EXE%" env list | findstr /R /C:"^happy[ ][ ]*" >nul 2>nul
   if not errorlevel 1 (
+    set "CONDA_ENV=happy"
     set "PYTHON_CMD="%CONDA_EXE%" run -n happy python"
     echo Using Conda env: happy
   ) else (
+    set "CONDA_ENV=base"
     set "PYTHON_CMD="%CONDA_EXE%" run -n base python"
     echo Conda env happy not found; using base.
   )
@@ -27,7 +30,7 @@ if defined CONDA_EXE (
 )
 
 set "PY_ARCH=unknown"
-for /f "delims=" %%A in ('%PYTHON_CMD% -c "import platform; print(platform.machine())"') do set "PY_ARCH=%%A"
+for /f "delims=" %%A in ('call %PYTHON_CMD% -c "import platform; print(platform.machine())"') do set "PY_ARCH=%%A"
 set "ASSET_NAME=llm-pool-windows-x64"
 if /I "%PY_ARCH%"=="ARM64" set "ASSET_NAME=llm-pool-windows-arm64-experimental"
 echo Python architecture: %PY_ARCH%
