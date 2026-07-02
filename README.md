@@ -4,7 +4,7 @@ Local Windows software gateway for multiple LLM API keys and account sessions.
 
 The app runs a FastAPI server, opens a desktop-style dashboard, and exposes OpenAI-compatible and Anthropic-compatible endpoints for tools such as Cursor, Continue, Aider, Claude Code, Cline, and custom scripts.
 
-Repository: https://github.com/occ-tools/llm-api-pool
+Repository: https://github.com/Hephaestus-DevKit/llm-api-pool
 
 ## What It Provides
 
