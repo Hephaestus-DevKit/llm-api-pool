@@ -48,6 +48,12 @@ DEFAULT_MODELS = {
     "official_gemini": "gemini-2.5-flash",
 }
 
+VERSION = "0.1.0"
+
+# How often the router's usage/health snapshot is written to disk. 0 disables the
+# periodic save; the shutdown save still runs.
+ROUTER_STATE_SAVE_SECONDS = int_env("ROUTER_STATE_SAVE_SECONDS", 60, 0)
+
 QUOTA_EXHAUSTED_THRESHOLD = int_env("QUOTA_EXHAUSTED_THRESHOLD", 100, 0)   # tokens
 QUOTA_EXHAUSTED_REQUESTS = int_env("QUOTA_EXHAUSTED_REQUESTS", 1, 0)       # requests
 QUOTA_COOLDOWN_SECONDS = float(int_env("QUOTA_COOLDOWN_SECONDS", 60, 1))

@@ -2,13 +2,45 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import threading
 import time
 import webbrowser
 
-from . import settings, webdrive
+from . import settings, store, webdrive
 from .diagnostics import record_diagnostic_event
 from .webapp import app, runtime_info
+
+
+def check_web(argv_unused=None) -> int:
+    """Run the web-channel selector self-check and print a human-readable report."""
+    channels = [c for c in store.CHANNELS if str(c.get("type", "")).startswith("web_")]
+    if not channels:
+        print("No web channels configured; add one in the dashboard first.")
+        return 0
+
+    async def _run():
+        try:
+            return await webdrive.check_web_channels(channels)
+        finally:
+            await webdrive.shutdown()
+
+    reports = asyncio.run(_run())
+    all_ok = True
+    for r in reports:
+        ok = r["page_loaded"] and r["input_found"]
+        all_ok = all_ok and ok
+        status = "OK  " if ok else "FAIL"
+        print(f"[{status}] {r['name']} ({r['type']}) -> {r['url']}")
+        print(f"       page loaded: {r['page_loaded']}, input: {r['input_selector'] or 'NOT FOUND'}, "
+              f"response containers: {r['responses_found']}")
+        if r["error"]:
+            print(f"       error: {r['error']}")
+    if not all_ok:
+        print("\nAt least one channel failed. If the page loads but selectors fail, the site "
+              "changed its DOM: update WEB_PROFILES in llm_pool/webdrive.py. If the page "
+              "itself fails, the session cookies may have expired.")
+    return 0 if all_ok else 1
 
 
 def main():
@@ -18,7 +50,11 @@ def main():
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open browser")
     parser.add_argument("--open-browser-delay", type=int, default=2, help="Seconds to wait before opening browser")
     parser.add_argument("--install-browser", action="store_true", help="Install Playwright Chromium for web login features (run once)")
+    parser.add_argument("--check-web", action="store_true", help="Check each web channel's page selectors without sending a prompt, then exit")
     args = parser.parse_args()
+
+    if args.check_web:
+        raise SystemExit(check_web())
 
     if args.install_browser:
         print("Installing Playwright Chromium for web sessions...")

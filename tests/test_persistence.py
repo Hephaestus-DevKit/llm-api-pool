@@ -130,3 +130,125 @@ def test_saved_file_permissions_are_restricted_on_posix(pool, tmp_path):
     pool.save_channels()
     if os.name != "nt":
         assert (os.stat(tmp_path / "channels.json").st_mode & 0o777) == 0o600
+
+
+# ---------------------------------------------------------------- router state
+
+def test_router_state_round_trips(pool, monkeypatch, tmp_path):
+    from llm_pool import routing
+
+    ch = {"id": "r1", "type": "official_claude", "name": "n", "config": {}}
+    pool.CHANNELS.append(ch)
+    router = routing.router
+    router.record_result(ch, True, 2.0, tokens_used=500,
+                         headers={"x-ratelimit-remaining-tokens": "1234"})
+    router.cooldowns["r1"] = 10 ** 12  # far future
+    router._get_stats("r1")["in_flight"] = 3  # live value: must not survive
+    routing.save_router_state()
+
+    fresh = routing.SmartRouter()
+    monkeypatch.setattr(routing, "router", fresh)
+    routing.load_router_state()
+    s = fresh.stats["r1"]
+    assert s["used_est_tokens"] == 500
+    assert s["calls"] == 1 and s["success"] == 1
+    assert s["last_quota_remaining"] == 1234
+    assert s["in_flight"] == 0
+    assert fresh.cooldowns["r1"] > 10 ** 11
+
+
+def test_router_state_prunes_deleted_channels_and_junk(pool, monkeypatch, tmp_path):
+    import json as jsonlib
+
+    from llm_pool import routing
+
+    pool.CHANNELS.append({"id": "keep", "type": "official_claude", "name": "n", "config": {}})
+    state = {
+        "stats": {
+            "keep": {"health": "9.5", "used_est_tokens": "not a number", "calls": 7},
+            "ghost": {"health": 1.0},
+        },
+        "cooldowns": {"keep": 1.0, "ghost": 10 ** 12, "keep2": "junk"},
+    }
+    (tmp_path / "router_state.json").write_text(jsonlib.dumps(state), encoding="utf-8")
+    routing.load_router_state()
+    router = routing.router
+    assert "ghost" not in router.stats
+    assert router.stats["keep"]["calls"] == 7
+    assert router.stats["keep"]["health"] == 1.0          # "9.5" clamped to the valid range
+    assert router.stats["keep"]["used_est_tokens"] == 0   # junk ignored, default kept
+    assert router.cooldowns == {}                         # expired + unknown + junk all dropped
+
+
+def test_lifespan_saves_router_state_on_shutdown(pool, tmp_path):
+    from fastapi.testclient import TestClient
+
+    with TestClient(pool.app, raise_server_exceptions=False):
+        pass
+    assert (tmp_path / "router_state.json").exists()
+
+
+# ---------------------------------------------------------------- keyring envelopes (POSIX)
+
+class FakeKeyring:
+    def __init__(self, fail_writes=False):
+        self.entries = {}
+        self.fail_writes = fail_writes
+
+    def set_password(self, service, key, value):
+        if self.fail_writes:
+            raise RuntimeError("no backend")
+        self.entries[(service, key)] = value
+
+    def get_password(self, service, key):
+        return self.entries.get((service, key))
+
+
+@pytest.fixture
+def posix_keyring(monkeypatch):
+    """Pretend we are on POSIX with a working OS keyring."""
+    fake = FakeKeyring()
+    monkeypatch.setattr(secretbox, "_is_windows", lambda: False)
+    monkeypatch.setattr(secretbox, "_keyring_module", lambda: fake)
+    secretbox._SECRET_ENVELOPE_CACHE.clear()
+    yield fake
+    secretbox._SECRET_ENVELOPE_CACHE.clear()
+
+
+def test_keyring_round_trip_and_no_secret_on_disk(pool, tmp_path, posix_keyring):
+    pool.CHANNELS.append({"id": "c1", "type": "web_claude", "name": "n",
+                          "config": {"cookies": {"sessionKey": "keyring-live-secret"}}})
+    pool.save_channels()
+    raw = (tmp_path / "channels.json").read_text(encoding="utf-8")
+    assert "keyring-live-secret" not in raw
+    assert '"keyring"' in raw
+    assert len(posix_keyring.entries) == 1
+
+    pool.CHANNELS.clear()
+    pool.load_channels()
+    assert pool.CHANNELS[0]["config"]["cookies"] == {"sessionKey": "keyring-live-secret"}
+
+
+def test_keyring_reprotect_is_idempotent(posix_keyring):
+    first = secretbox.protect_secret_value("same-secret-value")
+    secretbox._SECRET_ENVELOPE_CACHE.clear()  # simulate a later process
+    second = secretbox.protect_secret_value("same-secret-value")
+    assert first == second
+    assert len(posix_keyring.entries) == 1
+
+
+def test_keyring_write_failure_falls_back_to_plaintext(monkeypatch):
+    monkeypatch.setattr(secretbox, "_is_windows", lambda: False)
+    monkeypatch.setattr(secretbox, "_keyring_module", lambda: FakeKeyring(fail_writes=True))
+    monkeypatch.setenv("LLM_POOL_ALLOW_PLAINTEXT_SECRETS", "1")
+    secretbox._SECRET_ENVELOPE_CACHE.clear()
+    assert secretbox.protect_secret_value("fallback-secret") == "fallback-secret"
+
+
+def test_missing_keyring_entry_does_not_break_the_load(pool, tmp_path, posix_keyring):
+    payload = [{"id": "c1", "type": "official_openai", "name": "n", "config": {
+        "api_key": {secretbox.SECRET_ENVELOPE_KEY: "keyring",
+                    "service": secretbox.KEYRING_SERVICE, "entry": "gone"}}}]
+    (tmp_path / "channels.json").write_text(json.dumps(payload), encoding="utf-8")
+    pool.load_channels()  # must not raise
+    assert len(pool.CHANNELS) == 1

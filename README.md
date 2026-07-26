@@ -21,7 +21,7 @@ Repository: https://github.com/Hephaestus-DevKit/llm-api-pool
 - Admin diagnostics export for sanitized runtime, channel, router, browser, and recent event state.
 - Portable Windows `--onedir` build for faster startup than PyInstaller onefile extraction.
 
-Official API channels are the recommended production path. Web-session channels are useful for personal quota pooling, but they are inherently more fragile because provider pages, cookies, 2FA, captcha, and browser automation can change.
+Official API channels are the recommended production path. Web-session channels are useful for personal quota pooling, but they are inherently more fragile because provider pages, cookies, 2FA, captcha, and browser automation can change. Be aware that driving a provider's web UI with automation may violate that provider's terms of service and can put the account at risk of suspension - use web-session channels with your own personal accounts, at your own judgment.
 
 ### Format Translation
 
@@ -59,7 +59,9 @@ Do not use a 32-bit x86 package; this project depends on Playwright/Chromium and
 
 When no `ADMIN_TOKEN` is configured, the app generates a random local admin token at startup and injects it only into the loopback dashboard. This keeps double-click local usage smooth while still requiring a token for admin API calls.
 
-Runtime data such as `channels.json` and Playwright profiles is stored next to the executable. API keys and cookies in `channels.json` are encrypted with Windows DPAPI for the current Windows user. Do not share that app folder if it contains personal accounts or browser profiles.
+Runtime data such as `channels.json`, `router_state.json` (usage/health counters, saved every minute and on shutdown so quota tracking survives restarts), and Playwright profiles is stored next to the executable. API keys and cookies in `channels.json` are encrypted with Windows DPAPI for the current Windows user. Do not share that app folder if it contains personal accounts or browser profiles.
+
+On macOS and Linux, install the optional `keyring` package (`pip install keyring`) and secrets are stored in the OS keychain (Keychain / Secret Service) instead of the JSON file; without it they are saved as plaintext with a warning. Changing a secret leaves the old keychain entry behind under the `llm-api-pool` service; remove stale entries with your OS keychain tool if you care.
 
 The first web-session channel triggers a one-time Chromium download (~150 MB). To avoid it on machines without internet, copy an `ms-playwright` folder next to the executable; the app uses a bundled browser directory in preference to the user profile.
 
@@ -76,7 +78,10 @@ Useful options:
 python main.py --host 127.0.0.1 --port 8080
 python main.py --no-open
 python main.py --install-browser
+python main.py --check-web
 ```
+
+`--check-web` opens each configured web channel's chat page headlessly and reports whether the input box and response containers can still be located, without sending anything. Run it when a web channel starts failing: if the page loads but a selector fails, the provider changed their DOM and `WEB_PROFILES` in [llm_pool/webdrive.py](llm_pool/webdrive.py) needs updating; if the page itself fails, the session cookies have likely expired.
 
 ## API Usage
 
@@ -260,7 +265,8 @@ The suite runs without network access or provider SDKs: fake backends stand in f
 
 ## Known Limits
 
-- Web UI selectors may need updates when providers change their pages.
+- Web UI selectors may need updates when providers change their pages; `python main.py --check-web` pinpoints which profile broke.
+- Driving provider web UIs may violate their terms of service; web-session channels are a personal-use convenience, not a supported integration path.
 - Web-session channels are text-only: they drive a chat box, so they cannot carry tool calls or images, and streaming is best-effort because it polls rendered output.
 - Gemini channels are text-only. Its schema dialect is a strict subset of JSON Schema, so forwarding arbitrary agent tool definitions would fail the whole request rather than degrade.
 - DPAPI-encrypted `channels.json` secrets are tied to the current Windows user; copying the folder to another machine or account loses them.

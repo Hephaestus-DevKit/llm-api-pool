@@ -1,6 +1,8 @@
 """FastAPI application: dashboard, admin API, and the unified /v1 endpoints."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import html
 import json
 import os
@@ -45,13 +47,28 @@ class AddChannelRequest(BaseModel):
     default_model: Optional[str] = None
 
 
+async def _periodic_router_state_save() -> None:
+    while True:
+        await asyncio.sleep(settings.ROUTER_STATE_SAVE_SECONDS)
+        await asyncio.to_thread(routing.save_router_state)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup messages are in cli.main() for a clearer local desktop experience.
+    routing.load_router_state()
+    saver = None
+    if settings.ROUTER_STATE_SAVE_SECONDS > 0:
+        saver = asyncio.create_task(_periodic_router_state_save())
     yield
     print("Shutting down...")
+    if saver is not None:
+        saver.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await saver
     await backends.aclose_all()
     await webdrive.shutdown()
+    await asyncio.to_thread(routing.save_router_state)
     print("Shutdown complete.")
 
 
@@ -143,6 +160,7 @@ async def health():
 def runtime_info() -> dict:
     arch = os.getenv("PROCESSOR_ARCHITEW6432") or os.getenv("PROCESSOR_ARCHITECTURE") or platform.machine() or "unknown"
     return {
+        "version": settings.VERSION,
         "host": settings.HOST,
         "port": settings.PORT,
         "arch": arch,
@@ -179,6 +197,8 @@ def diagnostics_payload() -> Dict[str, Any]:
             "app_dir": safe_path_for_diagnostics(get_app_dir()),
             "channels_file": safe_path_for_diagnostics(store.CHANNELS_FILE),
             "channels_file_exists": os.path.exists(store.CHANNELS_FILE),
+            "router_state_file": safe_path_for_diagnostics(store.router_state_file()),
+            "router_state_file_exists": os.path.exists(store.router_state_file()),
         },
         "security": {
             "admin_token_required": settings.require_admin_token(),
@@ -360,6 +380,9 @@ async def delete_channel(cid: str, _admin: None = Depends(require_admin)):
         await store.save_channels_async()
     await webdrive.close_web_context(cid)
     routing.router.forget(cid)
+    # Persist the pruned snapshot now rather than leaving the deleted channel's stats on
+    # disk until the next periodic save.
+    await asyncio.to_thread(routing.save_router_state)
     record_diagnostic_event("info", "channel_deleted", channel_id=cid, type=deleted.get("type"), name=deleted.get("name"))
     return {"deleted": cid}
 

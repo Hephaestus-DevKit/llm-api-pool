@@ -85,7 +85,9 @@ rate, cooldown state, and whether the channel supports tools. It needs the admin
 curl http://localhost:8080/admin/status -H "X-Admin-Token: <token>"
 ```
 
-The dashboard at `/` shows the same data visually.
+The dashboard at `/` shows the same data visually. Usage counters, health, and cooldowns
+persist across restarts in `router_state.json` next to `channels.json`, so quota estimates
+stay meaningful over days rather than resetting on every launch.
 
 ## Adding Web Sessions
 

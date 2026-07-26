@@ -311,3 +311,43 @@ def test_deleting_a_channel_forgets_its_creation_lock(monkeypatch):
     monkeypatch.setattr(webdrive, "_web_context_locks", {"c9": asyncio.Lock()})
     asyncio.run(webdrive.close_web_context("c9"))
     assert "c9" not in webdrive._web_context_locks
+
+
+# ---------------------------------------------------------------- selector self-check
+
+def test_check_web_channels_reports_healthy_selectors(drive):
+    page = FakePage(responses=[5])  # the count query for response containers
+    drive(page)
+    reports = asyncio.run(webdrive.check_web_channels([CHANNEL]))
+    assert len(reports) == 1
+    r = reports[0]
+    assert r["page_loaded"] is True
+    assert r["input_found"] is True
+    assert r["input_selector"] == main.WEB_PROFILES["claude"]["input_locators"][0]
+    assert r["responses_found"] == 5
+    assert r["error"] is None
+    assert page.closed
+
+
+def test_check_web_channels_flags_broken_input_selectors(drive):
+    page = FakePage(responses=[0], locators_visible=False)
+    drive(page)
+    r = asyncio.run(webdrive.check_web_channels([CHANNEL]))[0]
+    assert r["page_loaded"] is True
+    assert r["input_found"] is False
+    assert r["responses_found"] == 0
+
+
+def test_check_web_channels_captures_context_failures(monkeypatch):
+    async def broken(_ch):
+        raise RuntimeError("cookies expired")
+    monkeypatch.setattr(webdrive, "get_or_create_web_context", broken)
+    r = asyncio.run(webdrive.check_web_channels([CHANNEL]))[0]
+    assert r["page_loaded"] is False
+    assert "cookies expired" in r["error"]
+
+
+def test_check_web_channels_skips_official_channels():
+    reports = asyncio.run(webdrive.check_web_channels(
+        [{"id": "x", "type": "official_openai", "name": "n", "config": {}}]))
+    assert reports == []

@@ -107,6 +107,12 @@ async def save_channels_async() -> None:
     await asyncio.to_thread(save_channels)
 
 
+def router_state_file() -> str:
+    """Router stats live next to channels.json so both follow CHANNELS_FILE overrides."""
+    parent = os.path.dirname(os.path.abspath(CHANNELS_FILE))
+    return os.path.join(parent, "router_state.json")
+
+
 def new_channel_id() -> str:
     while True:
         cid = uuid.uuid4().hex[:12]

@@ -1,4 +1,10 @@
-"""At-rest protection for channel secrets: Windows DPAPI envelopes with a plaintext fallback."""
+"""At-rest protection for channel secrets.
+
+Windows uses DPAPI (built in, per-user). macOS/Linux use the OS keychain via the optional
+`keyring` package when it is installed and has a working backend; otherwise secrets fall
+back to plaintext with a warning. Envelopes on disk carry only a pointer or ciphertext,
+never the secret itself.
+"""
 from __future__ import annotations
 
 import base64
@@ -12,6 +18,8 @@ from .paths import _is_windows
 
 SECRET_CONFIG_KEYS = {"api_key", "password", "cookies"}
 SECRET_ENVELOPE_KEY = "__llm_pool_secret__"
+SECRET_ENVELOPE_KINDS = {"dpapi", "keyring"}
+KEYRING_SERVICE = "llm-api-pool"
 
 
 def _dpapi_protect(data: bytes) -> bytes:
@@ -83,7 +91,17 @@ def _dpapi_unprotect(data: bytes) -> bytes:
 
 
 def is_secret_envelope(value: Any) -> bool:
-    return isinstance(value, dict) and value.get(SECRET_ENVELOPE_KEY) == "dpapi"
+    return isinstance(value, dict) and value.get(SECRET_ENVELOPE_KEY) in SECRET_ENVELOPE_KINDS
+
+
+def _keyring_module():
+    """The optional keyring backend, or None when it is missing or has no usable store
+    (headless Linux without a Secret Service, for example)."""
+    try:
+        import keyring
+        return keyring
+    except Exception:
+        return None
 
 
 # DPAPI is a blocking ctypes call, so re-encrypting unchanged keys on every save would stall
@@ -92,12 +110,15 @@ _SECRET_ENVELOPE_CACHE: "OrderedDict[str, dict]" = OrderedDict()
 _SECRET_ENVELOPE_CACHE_MAX = 256
 
 
+def _cache_envelope(digest: str, envelope: dict) -> dict:
+    _SECRET_ENVELOPE_CACHE[digest] = envelope
+    while len(_SECRET_ENVELOPE_CACHE) > _SECRET_ENVELOPE_CACHE_MAX:
+        _SECRET_ENVELOPE_CACHE.popitem(last=False)
+    return dict(envelope)
+
+
 def protect_secret_value(value: Any) -> Any:
     if value is None or is_secret_envelope(value):
-        return value
-    if not _is_windows():
-        if os.getenv("LLM_POOL_ALLOW_PLAINTEXT_SECRETS") != "1":
-            print("[secrets] DPAPI unavailable; saving plaintext secrets. Set LLM_POOL_ALLOW_PLAINTEXT_SECRETS=1 to silence this warning.")
         return value
     payload = json.dumps({"value": value}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     digest = hashlib.sha256(payload).hexdigest()
@@ -105,20 +126,46 @@ def protect_secret_value(value: Any) -> Any:
     if cached is not None:
         _SECRET_ENVELOPE_CACHE.move_to_end(digest)
         return dict(cached)
-    envelope = {
-        SECRET_ENVELOPE_KEY: "dpapi",
-        "scope": "current_user",
-        "value": base64.b64encode(_dpapi_protect(payload)).decode("ascii"),
-    }
-    _SECRET_ENVELOPE_CACHE[digest] = envelope
-    while len(_SECRET_ENVELOPE_CACHE) > _SECRET_ENVELOPE_CACHE_MAX:
-        _SECRET_ENVELOPE_CACHE.popitem(last=False)
-    return dict(envelope)
+
+    if _is_windows():
+        envelope = {
+            SECRET_ENVELOPE_KEY: "dpapi",
+            "scope": "current_user",
+            "value": base64.b64encode(_dpapi_protect(payload)).decode("ascii"),
+        }
+        return _cache_envelope(digest, envelope)
+
+    keyring = _keyring_module()
+    if keyring is not None:
+        # Entry keys are the payload digest, so re-saving an unchanged secret is idempotent
+        # and identical values across channels share one entry. Changing a secret leaves the
+        # old entry behind in the keychain; harmless, and noted in the README.
+        try:
+            keyring.set_password(KEYRING_SERVICE, digest, payload.decode("utf-8"))
+            envelope = {SECRET_ENVELOPE_KEY: "keyring", "service": KEYRING_SERVICE, "entry": digest}
+            return _cache_envelope(digest, envelope)
+        except Exception as e:
+            print(f"[secrets] OS keyring rejected the write ({e}); falling back to plaintext.")
+
+    if os.getenv("LLM_POOL_ALLOW_PLAINTEXT_SECRETS") != "1":
+        print("[secrets] No DPAPI and no usable OS keyring; saving plaintext secrets. "
+              "Install `keyring` for keychain-backed storage, or set "
+              "LLM_POOL_ALLOW_PLAINTEXT_SECRETS=1 to silence this warning.")
+    return value
 
 
 def unprotect_secret_value(value: Any) -> Any:
     if not is_secret_envelope(value):
         return value
+    kind = value.get(SECRET_ENVELOPE_KEY)
+    if kind == "keyring":
+        keyring = _keyring_module()
+        if keyring is None:
+            raise RuntimeError("secret is stored in the OS keyring but the `keyring` package is not installed")
+        payload = keyring.get_password(value.get("service") or KEYRING_SERVICE, value.get("entry") or "")
+        if payload is None:
+            raise RuntimeError("keyring entry is missing (deleted, or a different OS user account)")
+        return json.loads(payload).get("value")
     encrypted = base64.b64decode(value.get("value", ""))
     payload = _dpapi_unprotect(encrypted)
     return json.loads(payload.decode("utf-8")).get("value")

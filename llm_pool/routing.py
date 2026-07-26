@@ -7,13 +7,16 @@ high-freq + browser web channels).
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import random
 import time
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import backends, settings, store
 from .canonical import CanonicalRequest
+from .diagnostics import record_diagnostic_event
 
 # Provider quota headers, most specific first. Substring matching used to pick whichever
 # header happened to iterate last, which mixed request budgets with token budgets.
@@ -269,6 +272,67 @@ class SmartRouter:
         self.cooldowns.pop(cid, None)
         self.sems.pop(cid, None)
 
+    # Numeric usage history and cooldowns survive a restart; live values (in_flight) and
+    # anything derived from the config do not belong in the snapshot.
+    PERSISTED_STAT_KEYS = (
+        "health", "avg_latency", "calls", "success", "used_est_tokens", "consec_fail",
+        "last_call", "last_quota_remaining", "last_quota_unit", "last_quota_at",
+    )
+
+    def snapshot(self) -> dict:
+        """State worth keeping across restarts, pruned to channels that still exist."""
+        known = {c.get("id") for c in store.CHANNELS}
+        now = time.time()
+        return {
+            "stats": {
+                cid: {key: s.get(key) for key in self.PERSISTED_STAT_KEYS}
+                for cid, s in self.stats.items() if cid in known
+            },
+            "cooldowns": {
+                cid: until for cid, until in self.cooldowns.items()
+                if cid in known and until > now
+            },
+        }
+
+    def restore(self, data: Any) -> None:
+        """Merge a snapshot back in. The file is user-editable, so every value is coerced
+        and junk is dropped rather than trusted."""
+        if not isinstance(data, dict):
+            return
+        known = {c.get("id") for c in store.CHANNELS}
+        for cid, payload in (data.get("stats") or {}).items():
+            if cid not in known or not isinstance(payload, dict):
+                continue
+            s = self._get_stats(cid)
+            for key in ("avg_latency", "last_call", "last_quota_at"):
+                try:
+                    s[key] = max(0.0, float(payload[key]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+            for key in ("calls", "success", "used_est_tokens", "consec_fail"):
+                try:
+                    s[key] = max(0, int(payload[key]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+            try:
+                s["health"] = min(1.0, max(0.1, float(payload["health"])))
+            except (KeyError, TypeError, ValueError):
+                pass
+            remaining = payload.get("last_quota_remaining")
+            if isinstance(remaining, int) and not isinstance(remaining, bool):
+                s["last_quota_remaining"] = remaining
+            if payload.get("last_quota_unit") in ("tokens", "requests"):
+                s["last_quota_unit"] = payload["last_quota_unit"]
+            s["in_flight"] = 0  # nothing is in flight in a fresh process
+        now = time.time()
+        for cid, until in (data.get("cooldowns") or {}).items():
+            try:
+                until = float(until)
+            except (TypeError, ValueError):
+                continue
+            if cid in known and until > now:
+                self.cooldowns[cid] = until
+
     def get_status(self) -> list:
         out = []
         for ch in store.CHANNELS:
@@ -297,3 +361,32 @@ class SmartRouter:
 
 
 router = SmartRouter()
+
+
+def save_router_state() -> None:
+    """Atomic write, same pattern as channels.json: a crash mid-save must not eat the file."""
+    path = store.router_state_file()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(router.snapshot(), f, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        record_diagnostic_event("error", "router_state_save_failed", error=str(e))
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def load_router_state() -> None:
+    path = store.router_state_file()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            router.restore(json.load(f))
+        record_diagnostic_event("info", "router_state_loaded", channels=len(router.stats))
+    except Exception as e:
+        record_diagnostic_event("error", "router_state_load_failed", error=str(e))

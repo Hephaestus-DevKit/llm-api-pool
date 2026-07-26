@@ -49,6 +49,8 @@ htmlcov/
 # Runtime data (user-specific)
 channels.json
 channels.json.tmp
+router_state.json
+router_state.json.tmp
 .pw_data_*/
 *.log
 pw-*.log

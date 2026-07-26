@@ -397,6 +397,60 @@ async def drive_web_chat_stream(ch: dict, prompt: str, interval: float = 0.35,
             pass
 
 
+async def check_web_channels(channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Selector health check for `--check-web`: open each web channel's chat page and
+    report whether the input box and response containers can still be found, without
+    sending any prompt. When a provider redesigns its page, this pinpoints which
+    WEB_PROFILES entry needs new selectors."""
+    reports: List[Dict[str, Any]] = []
+    for ch in channels:
+        if not str(ch.get("type", "")).startswith("web_"):
+            continue
+        profile = web_profile_for(ch["type"])
+        report: Dict[str, Any] = {
+            "id": ch.get("id"),
+            "name": ch.get("name"),
+            "type": ch.get("type"),
+            "url": profile["url"],
+            "page_loaded": False,
+            "input_found": False,
+            "input_selector": None,
+            "responses_found": 0,
+            "error": None,
+        }
+        try:
+            context = await get_or_create_web_context(ch)
+            page = await context.new_page()
+            try:
+                await page.goto(profile["url"], wait_until="domcontentloaded", timeout=45000)
+                await page.wait_for_timeout(1500)
+                report["page_loaded"] = True
+                for selector in profile["input_locators"]:
+                    try:
+                        await page.locator(selector).first.wait_for(timeout=4000, state="visible")
+                        report["input_found"] = True
+                        report["input_selector"] = selector
+                        break
+                    except Exception:
+                        continue
+                try:
+                    count = await page.evaluate(
+                        f"() => document.querySelectorAll({json.dumps(profile['response_selector'])}).length"
+                    )
+                    report["responses_found"] = int(count) if isinstance(count, (int, float)) else 0
+                except Exception:
+                    pass
+            finally:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            report["error"] = str(e)[:200]
+        reports.append(report)
+    return reports
+
+
 # ==================== Login helper (Playwright for email+pass -> cookies) ====================
 
 MANUAL_BROWSER_INSTALL_HINT = (
