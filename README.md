@@ -17,9 +17,11 @@ Repository: https://github.com/Hephaestus-DevKit/llm-api-pool
 - Tool calling in both dialects, streaming included, with tool definitions, tool calls, and tool results translated between the OpenAI and Anthropic shapes.
 - Automatic failover: a request that fails upstream is retried on the next-best channel.
 - Smart routing by provider compatibility, health, real quota headers, latency, in-flight load, tool support, priority, and cooldown state.
+- Usage, health, and cooldown tracking that persists across restarts (`router_state.json`), so quota estimates stay meaningful over days.
+- Encrypted at-rest secrets: Windows DPAPI, or the OS keychain on macOS/Linux via the optional `keyring` package.
 - Self-contained dashboard with account health, quota estimate, latency, in-flight load, and a playground.
-- Admin diagnostics export for sanitized runtime, channel, router, browser, and recent event state.
-- Portable Windows `--onedir` build for faster startup than PyInstaller onefile extraction.
+- Admin diagnostics export for sanitized runtime, channel, router, browser, and recent event state, plus a `--check-web` selector self-check for web channels.
+- Portable Windows `--onedir` builds for x64 and native ARM64, faster to start than PyInstaller onefile extraction.
 
 Official API channels are the recommended production path. Web-session channels are useful for personal quota pooling, but they are inherently more fragile because provider pages, cookies, 2FA, captcha, and browser automation can change. Be aware that driving a provider's web UI with automation may violate that provider's terms of service and can put the account at risk of suspension - use web-session channels with your own personal accounts, at your own judgment.
 
@@ -61,8 +63,6 @@ When no `ADMIN_TOKEN` is configured, the app generates a random local admin toke
 
 Runtime data such as `channels.json`, `router_state.json` (usage/health counters, saved every minute and on shutdown so quota tracking survives restarts), and Playwright profiles is stored next to the executable. API keys and cookies in `channels.json` are encrypted with Windows DPAPI for the current Windows user. Do not share that app folder if it contains personal accounts or browser profiles.
 
-On macOS and Linux, install the optional `keyring` package (`pip install keyring`) and secrets are stored in the OS keychain (Keychain / Secret Service) instead of the JSON file; without it they are saved as plaintext with a warning. Changing a secret leaves the old keychain entry behind under the `llm-api-pool` service; remove stale entries with your OS keychain tool if you care.
-
 The first web-session channel triggers a one-time Chromium download (~150 MB). To avoid it on machines without internet, copy an `ms-playwright` folder next to the executable; the app uses a bundled browser directory in preference to the user profile.
 
 ## Quick Start: Source
@@ -71,6 +71,8 @@ The first web-session channel triggers a one-time Chromium download (~150 MB). T
 pip install -r requirements.txt
 python main.py
 ```
+
+On macOS and Linux, also install the optional `keyring` package (`pip install keyring`) and secrets are stored in the OS keychain (Keychain / Secret Service) instead of the JSON file; without it they are saved as plaintext with a warning. Changing a secret leaves the old keychain entry behind under the `llm-api-pool` service; remove stale entries with your OS keychain tool if you care.
 
 Useful options:
 
@@ -232,7 +234,7 @@ python -m pytest
 python -m ruff check llm_pool main.py tests scripts
 ```
 
-The suite runs without network access or provider SDKs: fake backends stand in for the providers, so it exercises the dialect adapters, router scoring, failover, SSE encoders, rate limiting, redaction, and the at-rest secret handling directly. Both GitHub workflows run it, plus the `ruff` correctness lint configured in `ruff.toml`.
+The suite runs without network access or provider SDKs: fake backends stand in for the providers, so it exercises the dialect adapters, router scoring, failover, SSE encoders, rate limiting, redaction, at-rest secret handling (DPAPI and keyring), router-state persistence, and the web-driver control flow directly. Both GitHub workflows run it, plus the `ruff` correctness lint configured in `ruff.toml`.
 
 ## Files
 
@@ -240,14 +242,14 @@ The suite runs without network access or provider SDKs: fake backends stand in f
 - `llm_pool/`: the implementation, split by responsibility with dependencies flowing strictly downward:
   - `paths.py`, `envtools.py`: frozen/source path resolution and typed env accessors.
   - `diagnostics.py`: redaction helpers and the sanitized recent-event ring buffer.
-  - `secretbox.py`: DPAPI envelopes for at-rest channel secrets.
+  - `secretbox.py`: at-rest channel secrets via DPAPI (Windows) or the OS keychain (macOS/Linux).
   - `settings.py`: environment-derived configuration and the non-local-bind startup guard.
   - `store.py`: the live channel list and its atomic persistence to `channels.json`.
   - `canonical.py`: the dialect-neutral request/response model and OpenAI/Anthropic adapters.
   - `security.py`: admin/API auth and the sliding-window rate limiter.
   - `webdrive.py`: the Playwright web-session driver and cookie login helper.
   - `backends.py`: provider backends (official SDKs plus web sessions).
-  - `routing.py`: SmartRouter scoring, quota tracking, cooldowns, concurrency permits.
+  - `routing.py`: SmartRouter scoring, quota tracking, cooldowns, concurrency permits, and the persisted usage snapshot.
   - `dispatch.py`: failover, stream leases, and both SSE encoders.
   - `webapp.py`: the FastAPI application and routes.
   - `cli.py`: the command-line entry point.
@@ -269,5 +271,5 @@ The suite runs without network access or provider SDKs: fake backends stand in f
 - Driving provider web UIs may violate their terms of service; web-session channels are a personal-use convenience, not a supported integration path.
 - Web-session channels are text-only: they drive a chat box, so they cannot carry tool calls or images, and streaming is best-effort because it polls rendered output.
 - Gemini channels are text-only. Its schema dialect is a strict subset of JSON Schema, so forwarding arbitrary agent tool definitions would fail the whole request rather than degrade.
-- DPAPI-encrypted `channels.json` secrets are tied to the current Windows user; copying the folder to another machine or account loses them.
+- Encrypted secrets are tied to the OS user account that created them (DPAPI on Windows, the keychain on macOS/Linux); copying the app folder to another machine or account loses them.
 - Default model ids are only starting points. Set `default_model` per channel for whatever your key actually has access to.
