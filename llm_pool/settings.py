@@ -48,7 +48,7 @@ DEFAULT_MODELS = {
     "official_gemini": "gemini-2.5-flash",
 }
 
-VERSION = "0.1.0"
+VERSION = "1.1.0"
 
 # How often the router's usage/health snapshot is written to disk. 0 disables the
 # periodic save; the shutdown save still runs.
