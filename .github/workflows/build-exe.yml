@@ -9,9 +9,24 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-x64:
-    name: build-x64
-    runs-on: windows-2025
+  build:
+    name: build-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    # The ARM64 leg is best-effort: if the native ARM64 ecosystem regresses, the x64
+    # release still ships and only the ARM64 asset is skipped.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            asset: llm-pool-windows-x64
+            experimental: false
+          - arch: arm64
+            runner: windows-11-arm
+            asset: llm-pool-windows-arm64
+            experimental: true
 
     steps:
       - uses: actions/checkout@v5
@@ -20,7 +35,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-          architecture: x64
+          architecture: ${{ matrix.arch }}
 
       - name: Install dependencies
         shell: pwsh
@@ -61,7 +76,7 @@ jobs:
         shell: pwsh
         run: |
           $port = 19080
-          $env:CHANNELS_FILE = Join-Path $env:RUNNER_TEMP "channels-x64.json"
+          $env:CHANNELS_FILE = Join-Path $env:RUNNER_TEMP "channels-${{ matrix.arch }}.json"
           $exe = Resolve-Path "dist\llm-pool\llm-pool.exe"
           $proc = Start-Process -FilePath $exe -ArgumentList @("--host", "127.0.0.1", "--port", "$port", "--no-open") -PassThru -WindowStyle Hidden
           try {
@@ -115,7 +130,7 @@ jobs:
       - name: Zip and checksum
         shell: pwsh
         run: |
-          $asset = "llm-pool-windows-x64"
+          $asset = "${{ matrix.asset }}"
           $zip = "dist\$asset.zip"
           Compress-Archive -Path dist\llm-pool -DestinationPath $zip -Force
           $hash = Get-FileHash $zip -Algorithm SHA256
@@ -127,42 +142,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" "dist/llm-pool-windows-x64.zip" "dist/llm-pool-windows-x64.zip.sha256" --clobber
-
-  arm64-compatibility-probe:
-    name: arm64-compatibility-probe
-    runs-on: windows-11-arm
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Set up Python ARM64
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-          architecture: arm64
-
-      - name: Probe native ARM64 dependency support
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-lock.txt
-          $installExit = $LASTEXITCODE
-          python -c "import playwright; print('playwright module ok')"
-          $importExit = $LASTEXITCODE
-          python -m playwright install chromium
-          $browserExit = $LASTEXITCODE
-
-          "## Windows ARM64 compatibility probe" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "install exit: $installExit" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "playwright import exit: $importExit" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "chromium install exit: $browserExit" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          if ($installExit -ne 0 -or $importExit -ne 0 -or $browserExit -ne 0) {
-            "Native ARM64 package is not published yet because the full native dependency stack is not installable on this runner. Use the x64 package under Windows on Arm emulation." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          } else {
-            "Native ARM64 dependencies passed. A real ARM64 package can be enabled after adding the same frozen-exe smoke gate used by x64." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          }
-          exit 0
+          gh release upload "${{ github.event.release.tag_name }}" "dist/${{ matrix.asset }}.zip" "dist/${{ matrix.asset }}.zip.sha256" --clobber

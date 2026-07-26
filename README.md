@@ -41,9 +41,10 @@ Gemini and web-session channels are text-only. A request carrying tools is route
 Use the package that matches your Windows device:
 
 - `llm-pool-windows-x64.zip`: primary Windows x64 package.
+- `llm-pool-windows-arm64.zip`: native ARM64 package, built best-effort (see below).
 - Each zip is published with a `.sha256` file.
 
-Windows on Arm users should use the x64 package under Windows' built-in x64 emulation. A native ARM64 package is not published yet because the full native dependency stack is not currently installable in the `windows-11-arm` runner with this dependency set; the current probe fails before packaging while building native dependencies such as `cryptography`, and Playwright is therefore not available either.
+The native ARM64 dependency stack (including Playwright/Chromium) now installs cleanly on the `windows-11-arm` runner, so releases build a native ARM64 package through the same test, lint, contract, and frozen-exe smoke gates as x64. The ARM64 leg is marked best-effort: if the ARM64 ecosystem regresses, the x64 release still ships and only the ARM64 asset is skipped. When a release has no ARM64 zip, use the x64 package under Windows' built-in x64 emulation.
 
 Do not use a 32-bit x86 package; this project depends on Playwright/Chromium and modern Python packages, so 32-bit Windows is not a sensible support target.
 
@@ -214,7 +215,7 @@ dist\llm-pool-windows-x64.zip.sha256
 llm-pool-launch.bat
 ```
 
-The GitHub Actions workflow runs the test suite and contract check, builds the x64 package, launches the frozen exe, checks `/health`, verifies the dashboard HTML, local admin-token bootstrap and `/admin/diagnostics`, confirms a tool-carrying Anthropic request reaches the router instead of crashing, zips the build, and uploads SHA256 files on releases. A separate ARM64 compatibility probe tracks whether native ARM64 packaging has become feasible.
+The GitHub Actions workflow runs the test suite, lint, and contract check, builds the package, launches the frozen exe, checks `/health`, verifies the dashboard HTML, local admin-token bootstrap and `/admin/diagnostics`, confirms a tool-carrying Anthropic request reaches the router instead of crashing, zips the build, and uploads SHA256 files on releases. The same job matrix runs on `windows-2025` (x64) and `windows-11-arm` (native ARM64, best-effort); a failed ARM64 leg never blocks the x64 release.
 
 `Dependency Probe` runs weekly and on demand with the current unlocked `requirements.txt` set. It validates imports, web-channel contracts, `pip check`, and Playwright Chromium installability so upstream dependency drift is visible before a release rebuild.
 
@@ -251,7 +252,7 @@ The suite runs without network access or provider SDKs: fake backends stand in f
 - `requirements-lock.txt`: resolved dependency lock used for reproducible CI builds when present.
 - `tests/`: pytest suite, no network or provider credentials needed.
 - `build_exe.bat`: local Windows build script.
-- `.github/workflows/build-exe.yml`: release/manual Windows x64 build workflow plus ARM64 compatibility probe.
+- `.github/workflows/build-exe.yml`: release/manual Windows build matrix producing the x64 package and a best-effort native ARM64 package through identical gates.
 - `.github/workflows/dependency-probe.yml`: scheduled unlocked dependency drift check.
 - `scripts/validate_web_contracts.py`: local/CI contract check for channel mappings, routes, dialect conversion, and dashboard hooks.
 - `examples/usage.md`: short integration examples.
