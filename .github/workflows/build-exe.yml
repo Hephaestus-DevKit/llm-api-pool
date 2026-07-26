@@ -22,10 +22,14 @@ jobs:
           - arch: x64
             runner: windows-2025
             asset: llm-pool-windows-x64
+            requirements: requirements-lock.txt
             experimental: false
           - arch: arm64
             runner: windows-11-arm
             asset: llm-pool-windows-arm64
+            # The x64-resolved lock does not apply here; see requirements-arm64.txt for
+            # why uvicorn[standard] and google-genai are absent on this architecture.
+            requirements: requirements-arm64.txt
             experimental: true
 
     steps:
@@ -40,13 +44,17 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
+          # Explicit exit-code checks: in a multi-command pwsh step only the last command's
+          # exit code fails the step, so a failed pip install would otherwise surface later
+          # as a baffling test-import error.
           python -m pip install --upgrade pip
-          if (Test-Path requirements-lock.txt) {
-            python -m pip install -r requirements-lock.txt
-          } else {
-            python -m pip install -r requirements.txt
-          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $reqs = "${{ matrix.requirements }}"
+          if (-not (Test-Path $reqs)) { $reqs = "requirements.txt" }
+          python -m pip install -r $reqs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install pyinstaller pytest httpx ruff
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run test suite
         shell: pwsh

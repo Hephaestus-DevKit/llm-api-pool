@@ -44,7 +44,7 @@ Use the package that matches your Windows device:
 - `llm-pool-windows-arm64.zip`: native ARM64 package, built best-effort (see below).
 - Each zip is published with a `.sha256` file.
 
-The native ARM64 dependency stack (including Playwright/Chromium) now installs cleanly on the `windows-11-arm` runner, so releases build a native ARM64 package through the same test, lint, contract, and frozen-exe smoke gates as x64. The ARM64 leg is marked best-effort: if the ARM64 ecosystem regresses, the x64 release still ships and only the ARM64 asset is skipped. When a release has no ARM64 zip, use the x64 package under Windows' built-in x64 emulation.
+The native ARM64 package is built from `requirements-arm64.txt` and goes through the same test, lint, contract, and frozen-exe smoke gates as x64, with two deliberate differences forced by win_arm64 wheel availability: `uvicorn` runs without the `[standard]` extras (httptools has no ARM64 wheel; this app serves no websockets), and the official Gemini SDK is excluded (google-auth hard-requires `cryptography`, which publishes no ARM64 wheels). Official Gemini channels on ARM64 return a clear error pointing at `web_gemini` or the x64 build; everything else is at full parity. The ARM64 leg is marked best-effort: if the ARM64 ecosystem regresses, the x64 release still ships and only the ARM64 asset is skipped. When a release has no ARM64 zip, use the x64 package under Windows' built-in x64 emulation.
 
 Do not use a 32-bit x86 package; this project depends on Playwright/Chromium and modern Python packages, so 32-bit Windows is not a sensible support target.
 
@@ -248,6 +248,7 @@ The suite runs without network access or provider SDKs: fake backends stand in f
   - `cli.py`: the command-line entry point.
 - `dashboard.html`: self-contained dashboard and playground.
 - `requirements.txt`: runtime dependencies.
+- `requirements-arm64.txt`: runtime dependencies for the native ARM64 build (no `uvicorn[standard]`, no `google-genai`; the file explains why).
 - `requirements-dev.txt`: runtime dependencies plus the test tooling.
 - `requirements-lock.txt`: resolved dependency lock used for reproducible CI builds when present.
 - `tests/`: pytest suite, no network or provider credentials needed.

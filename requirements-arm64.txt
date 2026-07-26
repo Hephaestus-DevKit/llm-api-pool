@@ -1,0 +1,15 @@
+# Dependency set for the native Windows ARM64 build. Two deliberate differences from
+# requirements.txt, both driven by win_arm64 wheel availability:
+#
+# - uvicorn without [standard]: httptools ships no ARM64 wheel, and this app serves no
+#   websockets, so the pure-python h11/asyncio implementations are all it needs.
+# - google-genai excluded: google-auth hard-requires cryptography, which publishes no
+#   win_arm64 wheels at all. Official Gemini channels therefore need the x64 build (or
+#   emulation); web_gemini channels work fine here via Playwright.
+fastapi
+uvicorn
+pydantic
+python-dotenv
+playwright
+openai
+anthropic

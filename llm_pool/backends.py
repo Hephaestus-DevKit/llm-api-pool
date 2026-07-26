@@ -353,6 +353,16 @@ class OfficialAnthropicBackend(BaseBackend):
             await aclose_client(stream)
 
 
+# The native ARM64 package ships without google-genai (its google-auth -> cryptography
+# chain has no win_arm64 wheels), so the import failure needs a message that says what
+# to do about it rather than a bare ModuleNotFoundError.
+GENAI_MISSING_HINT = (
+    "google-genai is not installed in this build (the native ARM64 package excludes it "
+    "because its cryptography dependency ships no ARM64 wheels). Use a web_gemini channel, "
+    "or the x64 build for official Gemini."
+)
+
+
 class OfficialGeminiBackend(BaseBackend):
     # Gemini's schema dialect is a strict subset of JSON Schema, so forwarding arbitrary agent
     # tool definitions would fail the whole request. The router prefers tool-capable channels
@@ -363,13 +373,19 @@ class OfficialGeminiBackend(BaseBackend):
         key = ch["config"]["api_key"]
 
         def factory():
-            from google import genai
+            try:
+                from google import genai
+            except ImportError as exc:
+                raise RuntimeError(GENAI_MISSING_HINT) from exc
             return genai.Client(api_key=key)
 
         return await self._clients.get(key, factory)
 
     def _config(self, req: CanonicalRequest):
-        from google.genai import types
+        try:
+            from google.genai import types
+        except ImportError as exc:
+            raise RuntimeError(GENAI_MISSING_HINT) from exc
         kwargs: Dict[str, Any] = {"temperature": req.temperature}
         if req.system:
             kwargs["system_instruction"] = req.system

@@ -251,3 +251,18 @@ def test_max_completion_tokens_is_accepted():
 def test_bad_tool_arguments_json_does_not_raise():
     assert main.parse_json_object("{not json") == {}
     assert main.parse_json_object('"scalar"') == {"value": "scalar"}
+
+
+def test_missing_gemini_sdk_yields_an_actionable_error(monkeypatch):
+    """The native ARM64 build ships without google-genai; the failure must say so
+    instead of surfacing a bare ModuleNotFoundError."""
+    import asyncio
+    import sys
+
+    import pytest
+
+    monkeypatch.setitem(sys.modules, "google", None)
+    monkeypatch.setitem(sys.modules, "google.genai", None)
+    backend = main.OfficialGeminiBackend()
+    with pytest.raises(RuntimeError, match="web_gemini"):
+        asyncio.run(backend._client({"config": {"api_key": "k"}}))
