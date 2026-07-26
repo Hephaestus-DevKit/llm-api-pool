@@ -29,6 +29,11 @@ env/
 env.bak/
 venv.bak/
 
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
 # IDE
 .vscode/
 .idea/
@@ -43,6 +48,7 @@ venv.bak/
 
 # Runtime data (user-specific)
 channels.json
+channels.json.tmp
 .pw_data_*/
 *.log
 pw-*.log

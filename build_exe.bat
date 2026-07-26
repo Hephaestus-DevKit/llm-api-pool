@@ -47,7 +47,17 @@ if exist requirements-lock.txt (
   %PYTHON_CMD% -m pip install -r requirements.txt
 )
 if errorlevel 1 exit /b 1
-%PYTHON_CMD% -m pip install pyinstaller
+%PYTHON_CMD% -m pip install pyinstaller pytest httpx
+if errorlevel 1 exit /b 1
+
+echo.
+echo Running test suite before packaging...
+%PYTHON_CMD% -m pytest
+if errorlevel 1 (
+  echo Tests failed; refusing to build.
+  exit /b 1
+)
+%PYTHON_CMD% scripts\validate_web_contracts.py
 if errorlevel 1 exit /b 1
 
 %PYTHON_CMD% -m PyInstaller ^

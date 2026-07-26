@@ -31,12 +31,18 @@ jobs:
           } else {
             python -m pip install -r requirements.txt
           }
-          python -m pip install pyinstaller
+          python -m pip install pyinstaller pytest httpx ruff
+
+      - name: Run test suite
+        shell: pwsh
+        run: |
+          python -m pytest
 
       - name: Validate Python package set
         shell: pwsh
         run: |
-          python -m py_compile main.py
+          python -m compileall -q llm_pool main.py
+          python -m ruff check llm_pool main.py tests scripts
           python scripts/validate_web_contracts.py
           python -m pip check
           python -c "import platform, struct; print('machine=', platform.machine()); print('pointer_bits=', struct.calcsize('P') * 8)"
@@ -80,6 +86,25 @@ jobs:
             $token = $match.Groups[1].Value
             $diag = Invoke-RestMethod "http://127.0.0.1:$port/admin/diagnostics" -Headers @{"X-Admin-Token" = $token} -TimeoutSec 5
             if (-not $diag.runtime -or -not $diag.security -or -not $diag.events) { throw "Diagnostics smoke failed." }
+            if (-not $diag.routing) { throw "Routing diagnostics smoke failed." }
+
+            # A tool-carrying Anthropic request is what Claude Code sends on every call. With
+            # no channels configured it must reach the router and answer 503, never crash.
+            $toolBody = @{
+              model = "claude-sonnet-5"
+              max_tokens = 16
+              messages = @(@{ role = "user"; content = "ping" })
+              tools = @(@{
+                name = "smoke_probe"
+                description = "probe"
+                input_schema = @{ type = "object"; properties = @{} }
+              })
+            } | ConvertTo-Json -Depth 8
+            $toolResponse = Invoke-WebRequest "http://127.0.0.1:$port/v1/messages" -Method Post `
+              -Body $toolBody -ContentType "application/json" -TimeoutSec 10 -SkipHttpErrorCheck
+            if ($toolResponse.StatusCode -ne 503) {
+              throw "Tool-carrying request returned $($toolResponse.StatusCode), expected 503 on an empty pool."
+            }
           } finally {
             if ($proc -and -not $proc.HasExited) {
               Stop-Process -Id $proc.Id -Force

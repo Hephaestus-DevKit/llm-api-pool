@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -47,6 +48,37 @@ for ch_type in web_types:
 for ch_type in official_types:
     assert_true(ch_type in main.DEFAULT_MODELS, f"{ch_type} has no default model")
 
+for ch_type, backend in main.BACKENDS.items():
+    assert_true(isinstance(backend, main.BaseBackend), f"{ch_type} backend is not a BaseBackend")
+    assert_true(isinstance(backend.supports_tools, bool), f"{ch_type} does not declare tool support")
+
+# Both dialects must survive a tool-carrying request. This is the exact shape Claude Code
+# sends on every call, and getting it wrong returns HTTP 500 rather than a routing error.
+anthropic_tool_request = {
+    "model": "claude-sonnet-5",
+    "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+    "tools": [{"name": "probe", "description": "d", "input_schema": {"type": "object"}}],
+}
+canonical = main.anthropic_to_canonical(anthropic_tool_request)
+assert_true([tool.name for tool in canonical.tools or []] == ["probe"], "anthropic tools did not normalize")
+assert_true(bool(main.canonical_tools_to_openai(canonical.tools)), "canonical tools do not render as OpenAI")
+assert_true(bool(main.canonical_messages_to_anthropic(canonical)), "canonical messages do not render as Anthropic")
+
+openai_tool_request = {
+    "model": "gpt-4o",
+    "messages": [{"role": "user", "content": "hi"}],
+    "tools": [{"type": "function", "function": {"name": "probe", "parameters": {"type": "object"}}}],
+}
+assert_true(
+    [tool.name for tool in main.openai_to_canonical(openai_tool_request).tools or []] == ["probe"],
+    "openai tools did not normalize",
+)
+
+# Tool output must never reach a provider as a Python repr.
+tool_result = main.anthropic_to_canonical({"model": "m", "messages": [
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}]}]})
+assert_true("'type':" not in json.dumps(tool_result.messages[0].content), "tool_result leaked a Python repr")
+
 routes = {getattr(route, "path", "") for route in main.app.routes}
 for path in {
     "/",
@@ -70,8 +102,19 @@ for marker in {
     'h["X-Api-Key"] = API_TOKEN',
     "BOOTSTRAP.generatedAdminToken",
     "localStorage.removeItem(\"llmPoolAdminToken\")",
+    "supports_tools",
+    "tool_calls",
+    "partial_json",
 }:
     assert_true(marker in dashboard, f"dashboard marker missing: {marker}")
+
+# Both SSE extractors must split on the record separator, otherwise a frame straddling a
+# chunk boundary is parsed as garbage and its text is silently dropped.
+for extractor in ("extractOpenAIStream", "extractAnthropicStream"):
+    start = dashboard.index(f"function {extractor}(")
+    body = dashboard[start:start + 900]
+    assert_true("split(/\\n\\n/)" in body, f"{extractor} must split on the SSE record separator")
+    assert_true("events.pop()" in body, f"{extractor} must return the trailing partial record")
 
 assert_true(
     'let ADMIN_TOKEN = BOOTSTRAP.generatedAdminToken' in dashboard,

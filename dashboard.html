@@ -622,7 +622,7 @@
 <script>
 const DEFAULT_MODELS = {
   official_openai: "gpt-4o-mini",
-  official_claude: "claude-3-5-sonnet-20241022",
+  official_claude: "claude-sonnet-5",
   official_gemini: "gemini-2.5-flash",
   web_chatgpt: "auto",
   web_codex: "auto",
@@ -821,6 +821,16 @@ function renderStatus(channels) {
     const health = Math.round((c.health || 1) * 100);
     const tone = c.cooldown ? "warn" : ((c.consec_fail || 0) ? "bad" : "good");
     const typeTone = c.type.startsWith("official_") ? "blue" : "good";
+    const calls = c.calls || 0;
+    const successPct = c.success_rate === null || c.success_rate === undefined
+      ? null
+      : Math.round(c.success_rate * 100);
+    // A live figure from the provider's rate-limit headers when one is available and fresh,
+    // otherwise the pool's own estimate. The unit matters: request and token budgets differ
+    // by orders of magnitude.
+    const quotaLabel = c.last_quota_remaining === null || c.last_quota_remaining === undefined
+      ? `${(c.remaining_est || 0).toLocaleString()} tokens left (estimated)`
+      : `${c.last_quota_remaining.toLocaleString()} ${c.last_quota_unit || "tokens"} left (reported)`;
     return `
       <article class="account-card">
         <div class="row">
@@ -832,13 +842,15 @@ function renderStatus(channels) {
           <span class="pill ${tone}">${health}% health</span>
           ${c.cooldown ? '<span class="pill warn">cooldown</span>' : ''}
           ${(c.in_flight || 0) ? `<span class="pill blue">${c.in_flight} in flight</span>` : ''}
+          ${c.supports_tools ? '<span class="pill blue">tools</span>' : '<span class="pill">text only</span>'}
           ${c.quota_category && c.quota_category !== "general" ? `<span class="pill">${escapeHtml(c.quota_category)}</span>` : ''}
           <span class="pill">${escapeHtml(c.avg_latency)}s avg</span>
+          ${successPct === null ? '' : `<span class="pill ${successPct >= 90 ? "good" : "warn"}">${successPct}% of ${calls}</span>`}
         </div>
         <div class="bar"><div style="width:${pct}%"></div></div>
         <div class="row hint" style="margin-top:7px">
           <span>${used.toLocaleString()} / ${quota.toLocaleString()} estimated tokens</span>
-          <span>${(c.remaining_est || 0).toLocaleString()} left</span>
+          <span>${escapeHtml(quotaLabel)}</span>
         </div>
       </article>
     `;
@@ -918,21 +930,29 @@ async function deleteChannel(id) {
   }
 }
 
+// Both extractors split on the SSE record separator and hand the trailing partial record
+// back to the caller. Splitting on single newlines would drop any frame that straddles a
+// chunk boundary, which silently truncates long answers.
 function extractOpenAIStream(buffer, output) {
-  const lines = buffer.split(/\r?\n/);
-  let remainder = "";
-  for (const line of lines) {
-    if (!line.startsWith("data:")) {
-      if (line && line === lines[lines.length - 1]) remainder = line;
-      continue;
-    }
-    const data = line.slice(5).trim();
+  const events = buffer.split(/\n\n/);
+  const remainder = events.pop() || "";
+  for (const block of events) {
+    const dataLine = block.split(/\r?\n/).find((line) => line.startsWith("data:"));
+    if (!dataLine) continue;
+    const data = dataLine.slice(5).trim();
     if (!data || data === "[DONE]") continue;
     try {
       const j = JSON.parse(data);
-      if (j.error) output.textContent += "\n[error] " + j.error.message;
-      const delta = j.choices?.[0]?.delta?.content || "";
-      output.textContent += delta;
+      if (j.error) {
+        output.textContent += "\n[error] " + (j.error.message || "stream failed");
+        continue;
+      }
+      const delta = j.choices?.[0]?.delta || {};
+      output.textContent += delta.content || "";
+      for (const call of delta.tool_calls || []) {
+        if (call.function?.name) output.textContent += `\n[tool_use ${call.function.name}] `;
+        output.textContent += call.function?.arguments || "";
+      }
     } catch {}
   }
   return remainder;
@@ -946,7 +966,12 @@ function extractAnthropicStream(buffer, output) {
     if (!dataLine) continue;
     try {
       const j = JSON.parse(dataLine.slice(5).trim());
-      if (j.type === "content_block_delta") output.textContent += j.delta?.text || "";
+      if (j.type === "content_block_start" && j.content_block?.type === "tool_use") {
+        output.textContent += `\n[tool_use ${j.content_block.name || ""}] `;
+      }
+      if (j.type === "content_block_delta") {
+        output.textContent += j.delta?.text || j.delta?.partial_json || "";
+      }
       if (j.type === "error") output.textContent += "\n[error] " + (j.error?.message || "stream failed");
     } catch {}
   }
